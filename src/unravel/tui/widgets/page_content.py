@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -9,6 +11,81 @@ from rich.text import Text
 
 from unravel.models import Thread
 from unravel.tui.state import WalkthroughState
+
+CODE_STYLE = "bold cyan"
+
+# Explicit markdown-ish syntax: `code`, **bold**, *italic*.
+_INLINE_RE = re.compile(
+    r"`([^`\n]+)`|\*\*([^*\n]+?)\*\*|(?<![*\w])\*([^*\n]+?)\*(?!\w)"
+)
+
+# Auto-detect code-like tokens that the LLM frequently mentions without
+# backticks. Each alternative is intentionally conservative to avoid
+# highlighting ordinary prose:
+#   - name()                  -> function/method calls
+#   - snake_case / __dunder__ -> identifiers with at least one underscore
+#   - module.function         -> dotted paths (both sides 2+ chars to skip
+#                                "i.e.", "e.g.")
+#   - CONSTANT_NAMES          -> ALL_CAPS identifiers with an underscore
+#   - file.ext                -> common source/config filenames
+_FILE_EXTS = (
+    "py|pyi|js|jsx|ts|tsx|go|rs|java|rb|c|h|cpp|hpp|cs|swift|kt|"
+    "md|json|ya?ml|toml|ini|cfg|html|css|scss|sh|bash|zsh|sql"
+)
+_AUTO_CODE_RE = re.compile(
+    r"\b[A-Za-z_][A-Za-z0-9_]*\(\)"
+    r"|\b[a-z_][a-z0-9_]*_[a-z0-9_]+\b"
+    r"|\b[A-Za-z_][A-Za-z0-9_]+\.[A-Za-z_][A-Za-z0-9_]+\b"
+    r"|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b"
+    rf"|(?:[\w./-]*[A-Za-z0-9_])\.(?:{_FILE_EXTS})\b"
+)
+
+
+def styled_text(content: str, base_style: str = "") -> Text:
+    """Render narration into a Rich Text with light syntax highlighting.
+
+    Supports explicit markdown-ish syntax:
+      `code`     -> bold cyan
+      **bold**   -> bold
+      *italic*   -> italic
+
+    Plus auto-detection of unwrapped code-like tokens (snake_case,
+    dotted.paths, CONSTANT_NAMES, function(), filenames). Plain words
+    inherit ``base_style``.
+    """
+    text = Text()
+    pos = 0
+    for match in _INLINE_RE.finditer(content):
+        if match.start() > pos:
+            _append_with_autodetect(text, content[pos : match.start()], base_style)
+        code, bold, italic = match.group(1), match.group(2), match.group(3)
+        if code is not None:
+            text.append(code, style=CODE_STYLE)
+        elif bold is not None:
+            text.append(bold, style=_combine(base_style, "bold"))
+        else:
+            text.append(italic, style=_combine(base_style, "italic"))
+        pos = match.end()
+    if pos < len(content):
+        _append_with_autodetect(text, content[pos:], base_style)
+    return text
+
+
+def _append_with_autodetect(text: Text, segment: str, base_style: str) -> None:
+    pos = 0
+    for match in _AUTO_CODE_RE.finditer(segment):
+        if match.start() > pos:
+            text.append(segment[pos : match.start()], style=base_style)
+        text.append(match.group(0), style=CODE_STYLE)
+        pos = match.end()
+    if pos < len(segment):
+        text.append(segment[pos:], style=base_style)
+
+
+def _combine(base: str, extra: str) -> str:
+    if not base:
+        return extra
+    return f"{base} {extra}"
 
 
 def render_page(state: WalkthroughState) -> RenderableType:
@@ -38,7 +115,7 @@ def _render_overview(state: WalkthroughState) -> RenderableType:
     parts: list[RenderableType] = [
         Panel(header_text, title="[bold]unravel[/bold]", border_style="cyan"),
         Text(""),
-        Text(wt.overview),
+        styled_text(wt.overview),
         Text(""),
         Text("Suggested review order:", style="bold"),
     ]
@@ -63,13 +140,15 @@ def _render_thread(state: WalkthroughState) -> RenderableType:
     thread = state.current_thread
     assert thread is not None
 
-    dep_text = ""
+    panel_body = Text()
+    panel_body.append(styled_text(thread.root_cause, base_style="bold"))
+    panel_body.append("\n\n")
+    panel_body.append(styled_text(thread.summary))
     if thread.dependencies:
-        dep_text = f"\n\n[dim]Depends on: {', '.join(thread.dependencies)}[/dim]"
-
-    panel_body = (
-        f"[bold]{thread.root_cause}[/bold]\n\n{thread.summary}{dep_text}"
-    )
+        panel_body.append("\n\n")
+        panel_body.append(
+            f"Depends on: {', '.join(thread.dependencies)}", style="dim"
+        )
 
     header = Panel(
         panel_body,
@@ -98,7 +177,7 @@ def _render_thread_rows(
     for si, step in enumerate(sorted_steps):
         step_line = Text()
         step_line.append(f"  Step {step.order}: ", style="bold green")
-        step_line.append(step.narration)
+        step_line.append(styled_text(step.narration))
         parts.append(step_line)
         parts.append(Text(""))
 
