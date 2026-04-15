@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from unravel.models import Hunk, Thread, ThreadStep, Walkthrough
+from unravel.models import Hunk, SourceInfo, Thread, ThreadStep, Walkthrough
 
 PageStatus = Literal["completed", "current", "unvisited"]
 
@@ -30,6 +30,7 @@ class WalkthroughState:
 
     walkthrough: Walkthrough
     all_hunks: list[Hunk] = field(default_factory=list)
+    source_info: SourceInfo | None = None
     ordered_threads: list[Thread] = field(init=False)
 
     # Navigation

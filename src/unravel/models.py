@@ -4,6 +4,23 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Literal
+
+SourceKind = Literal["pr", "commit", "range", "branch", "staged"]
+
+
+@dataclass
+class SourceInfo:
+    """Describes the origin of the diff being analyzed.
+
+    Used by the TUI header to show a one-line summary of what's under review:
+    repo + PR number/title, short SHA + subject, branch name, or commit count.
+    """
+
+    kind: SourceKind
+    label: str
+    repo: str | None = None
+    detail: str | None = None
 
 EXTENSION_LANGUAGES: dict[str, str] = {
     ".py": "python",

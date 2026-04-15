@@ -12,6 +12,8 @@ from unravel import __version__, cache
 from unravel.config import load_config
 from unravel.git import (
     UnravelGitError,
+    build_pr_source_info,
+    build_range_source_info,
     get_diff_from_pr,
     get_diff_from_range,
     get_pr_metadata,
@@ -296,12 +298,16 @@ def _run(
 
         metadata: dict = {}
         source_label: str
+        source_info = None
         if diff_source == "range":
             console.print(f"[dim]Getting diff for {range_spec}...[/dim]")
             raw_diff = get_diff_from_range(range_spec, staged=staged)
             source_label = f"range:{range_spec}"
             if staged:
                 source_label += " (staged)"
+            source_info = build_range_source_info(
+                range_spec, staged=staged, remote=remote
+            )
         else:
             console.print(f"[dim]Getting diff for PR #{pr_number}...[/dim]")
             raw_diff = get_diff_from_pr(pr_number, remote=remote)
@@ -310,6 +316,9 @@ def _run(
                 metadata = get_pr_metadata(pr_number, remote=remote)
             except UnravelGitError:
                 pass  # metadata is optional
+            source_info = build_pr_source_info(
+                pr_number, metadata or None, remote=remote
+            )
 
         hunks = parse_diff(raw_diff)
         file_count = len({h.file_path for h in hunks})
@@ -369,7 +378,11 @@ def _run(
         else:
             from unravel.tui import UnravelApp
 
-            app = UnravelApp(walkthrough=walkthrough, all_hunks=hunks)
+            app = UnravelApp(
+                walkthrough=walkthrough,
+                all_hunks=hunks,
+                source_info=source_info,
+            )
             app.run()
 
     except UnravelGitError as exc:

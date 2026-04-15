@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import PurePosixPath
 
 from unidiff import PatchSet
 
-from unravel.models import EXTENSION_LANGUAGES, Hunk
+from unravel.models import EXTENSION_LANGUAGES, Hunk, SourceInfo
+
+# GitHub's commits-list UI truncates subjects at 72 chars (industry-standard
+# hard limit for commit subject lines).
+COMMIT_SUBJECT_MAX = 72
 
 
 class UnravelGitError(Exception):
@@ -75,6 +80,175 @@ def get_pr_metadata(pr_number: int, *, remote: str = "origin") -> dict:
 def _get_remote_url(remote: str) -> str:
     result = _run_git(["git", "remote", "get-url", remote])
     return result.stdout.strip()
+
+
+_REMOTE_NWO_RE = re.compile(
+    r"(?:[/:])([^/:]+)/([^/:]+?)(?:\.git)?/?$"
+)
+
+
+def get_repo_nwo(remote: str = "origin") -> str | None:
+    """Return the ``owner/repo`` for ``remote``, or ``None`` if unavailable."""
+    try:
+        url = _get_remote_url(remote)
+    except UnravelGitError:
+        return None
+    match = _REMOTE_NWO_RE.search(url)
+    if not match:
+        return None
+    return f"{match.group(1)}/{match.group(2)}"
+
+
+def _rev_list_count(range_spec: str) -> int | None:
+    """Count commits in ``range_spec`` (e.g. ``A..B``). Returns ``None`` on error."""
+    try:
+        result = _run_git(["git", "rev-list", "--count", range_spec])
+    except UnravelGitError:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _commit_subject(ref: str, max_len: int = COMMIT_SUBJECT_MAX) -> str | None:
+    """Return the subject line of ``ref``, truncated to ``max_len`` with ellipsis."""
+    try:
+        result = _run_git(["git", "log", "-1", "--format=%s", ref])
+    except UnravelGitError:
+        return None
+    subject = result.stdout.strip()
+    if not subject:
+        return None
+    if len(subject) > max_len:
+        return subject[: max_len - 1].rstrip() + "…"
+    return subject
+
+
+def _short_sha(ref: str) -> str | None:
+    try:
+        result = _run_git(["git", "rev-parse", "--short", ref])
+    except UnravelGitError:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _is_known_branch(name: str) -> bool:
+    """Return True if ``name`` resolves to a local or remote-tracking branch."""
+    for ref_prefix in ("refs/heads/", "refs/remotes/"):
+        try:
+            result = _run_git(
+                ["git", "show-ref", "--verify", "--quiet", f"{ref_prefix}{name}"],
+                check=False,
+            )
+        except UnravelGitError:
+            continue
+        if result.returncode == 0:
+            return True
+    # Also try `<remote>/<name>` shorthand, e.g. "origin/feature".
+    if "/" in name:
+        try:
+            result = _run_git(
+                ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/{name}"],
+                check=False,
+            )
+        except UnravelGitError:
+            return False
+        return result.returncode == 0
+    return False
+
+
+def _split_range(range_spec: str) -> tuple[str, str] | None:
+    """Split ``A..B`` or ``A...B`` into ``(A, B)``; return ``None`` otherwise."""
+    if "..." in range_spec:
+        left, _, right = range_spec.partition("...")
+        return left, right
+    if ".." in range_spec:
+        left, _, right = range_spec.partition("..")
+        return left, right
+    return None
+
+
+def _commit_phrase(count: int) -> str:
+    return f"{count} commit{'s' if count != 1 else ''}"
+
+
+def build_pr_source_info(
+    pr_number: int,
+    metadata: dict | None,
+    *,
+    remote: str = "origin",
+) -> SourceInfo:
+    """Build a SourceInfo for a PR source (number + optional title)."""
+    title = None
+    if metadata:
+        raw_title = metadata.get("title")
+        if isinstance(raw_title, str) and raw_title.strip():
+            title = raw_title.strip()
+            if len(title) > COMMIT_SUBJECT_MAX:
+                title = title[: COMMIT_SUBJECT_MAX - 1].rstrip() + "…"
+    return SourceInfo(
+        kind="pr",
+        label=f"#{pr_number}",
+        repo=get_repo_nwo(remote),
+        detail=title,
+    )
+
+
+def build_range_source_info(
+    range_spec: str,
+    *,
+    staged: bool = False,
+    remote: str = "origin",
+) -> SourceInfo:
+    """Inspect ``range_spec`` and classify it as commit / range / branch / staged."""
+    repo = get_repo_nwo(remote)
+    if staged:
+        return SourceInfo(
+            kind="staged",
+            label="staged changes",
+            repo=repo,
+            detail=range_spec or None,
+        )
+
+    parts = _split_range(range_spec)
+    if parts is not None:
+        _, right = parts
+        count = _rev_list_count(range_spec)
+        if count == 1:
+            sha = _short_sha(range_spec) or _short_sha(right)
+            subject = _commit_subject(range_spec)
+            return SourceInfo(
+                kind="commit",
+                label=sha or range_spec,
+                repo=repo,
+                detail=subject,
+            )
+        if count is not None and count > 1 and right and _is_known_branch(right):
+            return SourceInfo(
+                kind="branch",
+                label=right,
+                repo=repo,
+                detail=_commit_phrase(count),
+            )
+        if count is not None:
+            return SourceInfo(
+                kind="range",
+                label=range_spec,
+                repo=repo,
+                detail=_commit_phrase(count),
+            )
+        return SourceInfo(kind="range", label=range_spec, repo=repo)
+
+    # Single ref (no `..`): branch name, tag, or commit-ish.
+    if _is_known_branch(range_spec):
+        return SourceInfo(kind="branch", label=range_spec, repo=repo)
+    subject = _commit_subject(range_spec)
+    sha = _short_sha(range_spec)
+    if subject and sha:
+        return SourceInfo(kind="commit", label=sha, repo=repo, detail=subject)
+    return SourceInfo(kind="range", label=range_spec, repo=repo)
 
 
 def infer_language(file_path: str) -> str | None:

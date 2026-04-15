@@ -6,6 +6,7 @@ from rich.console import Group
 from rich.text import Text
 from textual.widgets import Static
 
+from unravel.models import SourceInfo
 from unravel.tui.state import PageStatus, WalkthroughState
 
 STATUS_CHAR: dict[PageStatus, str] = {
@@ -25,7 +26,7 @@ class Timeline(Static):
     DEFAULT_CSS = """
     Timeline {
         dock: top;
-        height: 3;
+        height: 4;
         padding: 0 2;
         background: $surface-darken-1;
         content-align: center middle;
@@ -37,7 +38,9 @@ class Timeline(Static):
 
 
 def _render_timeline(state: WalkthroughState) -> Group:
-    """Build a 3-row Rich renderable: title | dots | thread count."""
+    """Build a 4-row Rich renderable: source | title | dots | status."""
+    source_line = _render_source_line(state.source_info)
+
     # Title line (only the current thread gets a title)
     title_line = Text(justify="center")
     if state.is_overview:
@@ -80,7 +83,32 @@ def _render_timeline(state: WalkthroughState) -> Group:
                 style="dim italic",
             )
 
-    return Group(title_line, dots_line, status)
+    return Group(source_line, title_line, dots_line, status)
+
+
+_KIND_STYLES: dict[str, str] = {
+    "pr": "bold green",
+    "commit": "bold cyan",
+    "range": "bold cyan",
+    "branch": "bold blue",
+    "staged": "bold yellow",
+}
+
+
+def _render_source_line(info: SourceInfo | None) -> Text:
+    """First header line: repo + PR/commit/range/branch identifier."""
+    line = Text(justify="center")
+    if info is None:
+        return line
+    if info.repo:
+        line.append(info.repo, style="bold")
+        line.append("  ")
+    style = _KIND_STYLES.get(info.kind, "bold cyan")
+    line.append(info.label, style=style)
+    if info.detail:
+        line.append("  ")
+        line.append(info.detail, style="dim")
+    return line
 
 
 def _render_dots(state: WalkthroughState) -> Text:
