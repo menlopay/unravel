@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 import typer
 from rich.console import Console
 
-from unravel import __version__
+from unravel import __version__, cache
 from unravel.config import load_config
 from unravel.git import (
     UnravelGitError,
@@ -26,6 +27,12 @@ app = typer.Typer(
     help="AI-powered CLI that decomposes PR diffs into causal threads.",
     no_args_is_help=True,
 )
+cache_app = typer.Typer(
+    name="cache",
+    help="Manage the local analysis cache.",
+    no_args_is_help=True,
+)
+app.add_typer(cache_app, name="cache")
 console = Console(stderr=True)
 stdout = Console()
 
@@ -78,6 +85,20 @@ def diff(
     no_tui: Annotated[
         bool, typer.Option("--no-tui", help="Disable interactive TUI")
     ] = False,
+    fresh: Annotated[
+        bool,
+        typer.Option(
+            "--fresh",
+            help="Ignore any cached analysis and re-run the LLM (still saves the new result).",
+        ),
+    ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            help="Skip reading and writing the local analysis cache for this run.",
+        ),
+    ] = False,
     api_key: Annotated[
         str | None,
         typer.Option("--api-key", help="API key", envvar="UNRAVEL_API_KEY"),
@@ -95,6 +116,8 @@ def diff(
         no_tui=no_tui,
         thinking_budget=thinking_budget,
         max_output_tokens=max_output_tokens,
+        fresh=fresh,
+        no_cache=no_cache,
         api_key=api_key,
     )
 
@@ -128,6 +151,20 @@ def pr(
     no_tui: Annotated[
         bool, typer.Option("--no-tui", help="Disable interactive TUI")
     ] = False,
+    fresh: Annotated[
+        bool,
+        typer.Option(
+            "--fresh",
+            help="Ignore any cached analysis and re-run the LLM (still saves the new result).",
+        ),
+    ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            help="Skip reading and writing the local analysis cache for this run.",
+        ),
+    ] = False,
     api_key: Annotated[
         str | None,
         typer.Option("--api-key", help="API key", envvar="UNRAVEL_API_KEY"),
@@ -145,8 +182,59 @@ def pr(
         no_tui=no_tui,
         thinking_budget=thinking_budget,
         max_output_tokens=max_output_tokens,
+        fresh=fresh,
+        no_cache=no_cache,
         api_key=api_key,
     )
+
+
+@cache_app.command("clear")
+def cache_clear() -> None:
+    """Remove every cached walkthrough from ~/.cache/unravel."""
+    count = cache.clear_all()
+    if count == 0:
+        stdout.print("No cached walkthroughs to remove.")
+    else:
+        stdout.print(
+            f"Removed {count} cached walkthrough{'s' if count != 1 else ''}."
+        )
+
+
+@cache_app.command("list")
+def cache_list() -> None:
+    """List every cached walkthrough with its source and timestamp."""
+    entries = cache.list_entries()
+    if not entries:
+        stdout.print("No cached walkthroughs.")
+        stdout.print(f"[dim]Cache directory: {cache.cache_dir()}[/dim]")
+        return
+    for e in entries:
+        ts = "unknown time"
+        if e.cached_at > 0:
+            ts = datetime.fromtimestamp(e.cached_at).isoformat(timespec="seconds")
+        label = e.source_label or "(unlabeled)"
+        stdout.print(
+            f"[bold]{ts}[/bold]  {label}  "
+            f"[dim]{e.provider}/{e.model}[/dim]"
+        )
+    stdout.print(f"[dim]Cache directory: {cache.cache_dir()}[/dim]")
+
+
+def _format_age(cached_at: float) -> str:
+    """Return a human-friendly "N units ago" string for a unix timestamp."""
+    if cached_at <= 0:
+        return "unknown time"
+    delta = datetime.now().timestamp() - cached_at
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        mins = int(delta // 60)
+        return f"{mins} minute{'s' if mins != 1 else ''} ago"
+    if delta < 86400:
+        hours = int(delta // 3600)
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = int(delta // 86400)
+    return f"{days} day{'s' if days != 1 else ''} ago"
 
 
 def _format_completion(metadata: dict) -> str:
@@ -182,6 +270,8 @@ def _run(
     no_tui: bool = False,
     thinking_budget: int | None,
     max_output_tokens: int | None,
+    fresh: bool = False,
+    no_cache: bool = False,
     api_key: str | None,
 ) -> None:
     import sys
@@ -199,12 +289,17 @@ def _run(
         llm.validate_config()
 
         metadata: dict = {}
+        source_label: str
         if diff_source == "range":
             console.print(f"[dim]Getting diff for {range_spec}...[/dim]")
             raw_diff = get_diff_from_range(range_spec, staged=staged)
+            source_label = f"range:{range_spec}"
+            if staged:
+                source_label += " (staged)"
         else:
             console.print(f"[dim]Getting diff for PR #{pr_number}...[/dim]")
             raw_diff = get_diff_from_pr(pr_number, remote=remote)
+            source_label = f"pr:#{pr_number}"
             try:
                 metadata = get_pr_metadata(pr_number, remote=remote)
             except UnravelGitError:
@@ -216,16 +311,40 @@ def _run(
             f"[dim]Parsed {len(hunks)} hunks across {file_count} files[/dim]"
         )
 
-        with console.status(
-            "[bold cyan]Starting analysis...", spinner="dots"
-        ) as live:
-            walkthrough = llm.analyze(
-                hunks,
-                raw_diff,
-                metadata,
-                on_status=lambda msg: live.update(f"[bold cyan]{msg}"),
+        walkthrough = None
+        if not no_cache and not fresh:
+            entry = cache.load(
+                raw_diff, config.provider, config.resolved_model
             )
-        console.print(f"[dim]{_format_completion(walkthrough.metadata)}[/dim]")
+            if entry is not None:
+                walkthrough = entry.walkthrough
+                age = _format_age(entry.cached_at)
+                console.print(
+                    f"[dim]Loaded cached analysis from {age} "
+                    f"({entry.provider}/{entry.model})[/dim]"
+                )
+
+        if walkthrough is None:
+            with console.status(
+                "[bold cyan]Starting analysis...", spinner="dots"
+            ) as live:
+                walkthrough = llm.analyze(
+                    hunks,
+                    raw_diff,
+                    metadata,
+                    on_status=lambda msg: live.update(f"[bold cyan]{msg}"),
+                )
+            console.print(
+                f"[dim]{_format_completion(walkthrough.metadata)}[/dim]"
+            )
+            if not no_cache:
+                cache.save(
+                    raw_diff,
+                    config.provider,
+                    config.resolved_model,
+                    walkthrough,
+                    source_label=source_label,
+                )
 
         walkthrough, hydration_warnings = hydrate_walkthrough(walkthrough, hunks)
         for w in hydration_warnings:
