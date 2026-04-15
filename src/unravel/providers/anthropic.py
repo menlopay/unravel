@@ -57,7 +57,9 @@ class AnthropicProvider(BaseProvider):
         status("Sending diff to Claude...")
         start = time.monotonic()
 
-        response_text = self._call_with_retry(system_prompt, user_prompt, status)
+        response_text, usage = self._call_with_retry(
+            system_prompt, user_prompt, status
+        )
 
         elapsed = time.monotonic() - start
         status(f"Analysis complete in {elapsed:.1f}s")
@@ -66,6 +68,15 @@ class AnthropicProvider(BaseProvider):
         walkthrough.metadata["model"] = self.config.resolved_model
         walkthrough.metadata["provider"] = "anthropic"
         walkthrough.metadata["elapsed_seconds"] = round(elapsed, 2)
+        walkthrough.metadata["input_tokens"] = usage.get("input_tokens", 0)
+        walkthrough.metadata["output_tokens"] = usage.get("output_tokens", 0)
+        walkthrough.metadata["thinking_tokens"] = usage.get("thinking_tokens", 0)
+        walkthrough.metadata["cache_read_tokens"] = usage.get(
+            "cache_read_tokens", 0
+        )
+        walkthrough.metadata["cache_creation_tokens"] = usage.get(
+            "cache_creation_tokens", 0
+        )
 
         return walkthrough
 
@@ -74,14 +85,16 @@ class AnthropicProvider(BaseProvider):
         system_prompt: str,
         user_prompt: str,
         status: Callable[[str], None],
-    ) -> str:
+    ) -> tuple[str, dict]:
         messages: list[dict] = [{"role": "user", "content": user_prompt}]
+        cumulative: dict[str, int] = {}
 
         for attempt in range(1, MAX_JSON_RETRIES + 1):
             try:
-                text = self._send_request(system_prompt, messages, status)
+                text, usage = self._send_request(system_prompt, messages, status)
+                _accumulate_usage(cumulative, usage)
                 json.loads(text)
-                return text
+                return text, cumulative
             except json.JSONDecodeError as exc:
                 if attempt >= MAX_JSON_RETRIES:
                     raise ValueError(
@@ -108,7 +121,7 @@ class AnthropicProvider(BaseProvider):
         system_prompt: str,
         messages: list[dict],
         status: Callable[[str], None],
-    ) -> str:
+    ) -> tuple[str, dict]:
         kwargs: dict = {
             "model": self.config.resolved_model,
             "max_tokens": self.config.max_output_tokens,
@@ -179,12 +192,14 @@ class AnthropicProvider(BaseProvider):
                 f"Claude API returned {exc.status_code}: {exc.message}"
             ) from exc
 
+        usage = _extract_usage(final_message, thinking_chars)
+
         for block in final_message.content:
             if block.type == "text":
-                return block.text
+                return block.text, usage
 
         if text_parts:
-            return "".join(text_parts)
+            return "".join(text_parts), usage
 
         raise ValueError("No text block found in Claude response.")
 
@@ -199,3 +214,39 @@ def _format_progress(
         parts.append(f"~{output_chars // 4} output tokens")
     parts.append(f"{elapsed:.0f}s")
     return " · ".join(parts)
+
+
+def _extract_usage(final_message, thinking_chars: int) -> dict:
+    """Extract token usage from the final message.
+
+    Anthropic returns exact counts in ``final_message.usage``. When the API
+    doesn't expose a dedicated thinking-token count, fall back to an estimate
+    based on streamed thinking characters (~4 chars/token).
+    """
+    usage = getattr(final_message, "usage", None)
+    result: dict[str, int] = {}
+    if usage is not None:
+        for attr in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ):
+            val = getattr(usage, attr, None)
+            if isinstance(val, int):
+                # Normalize the two cache fields to shorter names.
+                if attr == "cache_read_input_tokens":
+                    result["cache_read_tokens"] = val
+                elif attr == "cache_creation_input_tokens":
+                    result["cache_creation_tokens"] = val
+                else:
+                    result[attr] = val
+    if thinking_chars:
+        result["thinking_tokens"] = thinking_chars // 4
+    return result
+
+
+def _accumulate_usage(acc: dict[str, int], new: dict) -> None:
+    for key, val in new.items():
+        if isinstance(val, int):
+            acc[key] = acc.get(key, 0) + val

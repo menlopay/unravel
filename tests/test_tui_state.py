@@ -212,12 +212,26 @@ class TestFullDiffPage:
         state.next_page()  # full diff
         assert state.is_full_diff
         assert state.current_thread is None
-        assert state.current_rows() == []
         assert not state.next_page()
 
-    def test_full_diff_disables_toggle_expand(self):
+    def test_full_diff_has_one_row_per_hunk(self):
+        all_hunks = [
+            Hunk(id="H1", file_path="a.py", new_start=1, new_count=3),
+            Hunk(id="H2", file_path="b.py", new_start=5, new_count=2),
+        ]
+        state = WalkthroughState(_make_walkthrough(1), all_hunks=all_hunks)
+        state.next_page()
+        state.next_page()  # on full diff
+        rows = state.current_rows()
+        assert len(rows) == 2
+        assert state.current_hunk() is all_hunks[0]
+        state.next_row()
+        assert state.current_hunk() is all_hunks[1]
+
+    def test_full_diff_supports_toggle_expand(self):
         all_hunks = [Hunk(id="H1", file_path="a.py", new_start=1, new_count=3)]
         state = WalkthroughState(_make_walkthrough(1), all_hunks=all_hunks)
         state.next_page()
         state.next_page()  # on full diff
-        assert not state.toggle_expand()
+        assert state.toggle_expand()
+        assert state.is_expanded(state.page_index, 0)

@@ -248,8 +248,8 @@ def _render_hunk_diff(hunk) -> RenderableType:
 def _render_full_diff(state: WalkthroughState) -> RenderableType:
     """Render the full-diff reference page grouped by file.
 
-    This page shows every parsed hunk regardless of thread assignment so the
-    reviewer always has a ground-truth view of the entire change set.
+    Each hunk is a focusable row (like a thread page), so the reviewer can
+    step through them with ↑/↓ and Enter to expand/collapse the diff.
     """
     header_text = Text()
     file_count = len({h.file_path for h in state.all_hunks})
@@ -263,42 +263,59 @@ def _render_full_diff(state: WalkthroughState) -> RenderableType:
     )
 
     covered = _covered_hunk_ids(state)
-    by_file: dict[str, list[Hunk]] = {}
-    for h in state.all_hunks:
-        by_file.setdefault(h.file_path, []).append(h)
-
     parts: list[RenderableType] = [
         Panel(header_text, border_style="cyan"),
         Text(""),
         Text(
             "Every hunk in the PR, regardless of thread assignment. "
-            "Use this as a ground-truth reference.",
+            "↑↓ to focus, Enter to expand.",
             style="dim italic",
         ),
         Text(""),
     ]
 
-    for file_path, file_hunks in by_file.items():
-        file_line = Text()
-        file_line.append(file_path, style="bold yellow")
-        file_line.append(
-            f"  ({len(file_hunks)} hunk{'s' if len(file_hunks) != 1 else ''})",
+    # Group by file but preserve the flat hunk index (matches state.all_hunks)
+    # so row focus and expansion keys line up with the state machine.
+    by_file: dict[str, list[tuple[int, Hunk]]] = {}
+    for i, h in enumerate(state.all_hunks):
+        by_file.setdefault(h.file_path, []).append((i, h))
+
+    for file_path, entries in by_file.items():
+        file_header = Text()
+        file_header.append(file_path, style="bold")
+        file_header.append(
+            f"  ({len(entries)} hunk{'s' if len(entries) != 1 else ''})",
             style="dim",
         )
-        parts.append(file_line)
-        parts.append(Text(""))
+        parts.append(file_header)
 
-        for h in file_hunks:
-            id_line = Text()
-            id_line.append(f"  {h.id}", style="bold cyan")
-            if h.content != "[binary file]":
-                end = h.new_start + max(h.new_count - 1, 0)
-                id_line.append(f"  (lines {h.new_start}-{end})", style="dim")
-            if h.id not in covered:
-                id_line.append("  [orphaned]", style="bold red")
-            parts.append(id_line)
-            parts.append(_render_hunk_diff(h))
-            parts.append(Text(""))
+        for flat_index, hunk in entries:
+            is_focused = flat_index == state.row_index
+            is_expanded = state.is_expanded(state.page_index, flat_index)
+
+            row_line = Text()
+            prefix = "▼ " if is_expanded else "▶ "
+            row_line.append(
+                f"  {prefix}",
+                style="bold yellow" if is_focused else "dim",
+            )
+            id_style = (
+                "bold reverse yellow" if is_focused else "bold cyan"
+            )
+            row_line.append(hunk.id, style=id_style)
+            if hunk.content != "[binary file]":
+                end = hunk.new_start + max(hunk.new_count - 1, 0)
+                row_line.append(
+                    f"  (lines {hunk.new_start}-{end})", style="dim"
+                )
+            if hunk.id not in covered:
+                row_line.append("  [orphaned]", style="bold red")
+            parts.append(row_line)
+
+            if is_expanded:
+                parts.append(_render_hunk_diff(hunk))
+
+        parts.append(Text(""))
 
     return Group(*parts)
 

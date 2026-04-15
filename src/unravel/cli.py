@@ -149,6 +149,25 @@ def pr(
     )
 
 
+def _format_completion(metadata: dict) -> str:
+    """Build the "Analysis complete" line with timing and token counts."""
+    parts = [f"Analysis complete in {metadata.get('elapsed_seconds', 0)}s"]
+    thinking = metadata.get("thinking_tokens", 0)
+    output = metadata.get("output_tokens", 0)
+    input_tokens = metadata.get("input_tokens", 0)
+    cache_read = metadata.get("cache_read_tokens", 0)
+    if thinking:
+        parts.append(f"{thinking:,} thinking tokens")
+    if output:
+        parts.append(f"{output:,} output tokens")
+    if input_tokens:
+        label = f"{input_tokens:,} input tokens"
+        if cache_read:
+            label += f" ({cache_read:,} cached)"
+        parts.append(label)
+    return " · ".join(parts)
+
+
 def _run(
     *,
     diff_source: str,
@@ -206,8 +225,7 @@ def _run(
                 metadata,
                 on_status=lambda msg: live.update(f"[bold cyan]{msg}"),
             )
-        elapsed = walkthrough.metadata.get("elapsed_seconds", 0)
-        console.print(f"[dim]Analysis complete in {elapsed}s[/dim]")
+        console.print(f"[dim]{_format_completion(walkthrough.metadata)}[/dim]")
 
         walkthrough, hydration_warnings = hydrate_walkthrough(walkthrough, hunks)
         for w in hydration_warnings:

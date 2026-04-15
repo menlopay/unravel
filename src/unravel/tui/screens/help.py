@@ -14,8 +14,10 @@ HELP_TEXT = """\
   [bold]← / h[/bold]           Previous thread
 
 [bold cyan]Row navigation[/bold cyan]
-  [bold]↓ / j[/bold]           Next row (file)
-  [bold]↑ / k[/bold]           Previous row (file)
+  [bold]↓ / j[/bold]           Scroll page; move to next row at bottom edge
+  [bold]↑ / k[/bold]           Scroll page; move to previous row at top edge
+  [bold]Tab[/bold]             Next row (always navigates)
+  [bold]Shift+Tab[/bold]       Previous row (always navigates)
   [bold]Enter / Space[/bold]   Expand/collapse diff for current row
   [bold]e[/bold]               Expand all rows on this thread
   [bold]c[/bold]               Collapse all rows on this thread

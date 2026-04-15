@@ -25,6 +25,8 @@ class FooterBar(Static):
         hints.append("thread  ")
         if not state.is_overview:
             hints.append(" ↑↓ ", style="bold")
+            hints.append("scroll/row  ")
+            hints.append(" Tab ", style="bold")
             hints.append("row  ")
             hints.append(" Enter ", style="bold")
             hints.append("expand  ")

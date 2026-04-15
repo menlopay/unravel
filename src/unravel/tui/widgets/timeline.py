@@ -60,9 +60,17 @@ def _render_timeline(state: WalkthroughState) -> Group:
     if state.is_overview:
         status.append("press → to start", style="dim italic")
     elif state.is_full_diff:
-        status.append(
-            "ground-truth view of every hunk", style="dim italic"
-        )
+        rows = state.current_rows()
+        if rows:
+            status.append(
+                f"hunk {state.row_index + 1}/{len(rows)} — "
+                "↑↓ focus, Enter to expand",
+                style="dim italic",
+            )
+        else:
+            status.append(
+                "ground-truth view of every hunk", style="dim italic"
+            )
     else:
         rows = state.current_rows()
         if rows:

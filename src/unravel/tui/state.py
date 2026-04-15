@@ -97,8 +97,13 @@ class WalkthroughState:
     # ------- Rows -------
 
     def current_rows(self) -> list[Row]:
-        if self.is_overview or self.is_full_diff:
+        if self.is_overview:
             return []
+        if self.is_full_diff:
+            return [
+                Row(step_index=0, hunk_index=i)
+                for i in range(len(self.all_hunks))
+            ]
         thread = self.current_thread
         assert thread is not None
         rows: list[Row] = []
@@ -116,8 +121,14 @@ class WalkthroughState:
 
     def current_hunk(self) -> Hunk | None:
         row = self.current_row()
+        if row is None:
+            return None
+        if self.is_full_diff:
+            if row.hunk_index >= len(self.all_hunks):
+                return None
+            return self.all_hunks[row.hunk_index]
         thread = self.current_thread
-        if row is None or thread is None:
+        if thread is None:
             return None
         sorted_steps = sorted(thread.steps, key=lambda s: s.order)
         step = sorted_steps[row.step_index]
@@ -163,7 +174,7 @@ class WalkthroughState:
 
     def toggle_expand(self) -> bool:
         """Toggle expansion of the current row. Returns True if a row was toggled."""
-        if self.is_overview or self.is_full_diff:
+        if self.is_overview:
             return False
         key = (self.page_index, self.row_index)
         if key in self.expanded_rows:
