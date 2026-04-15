@@ -1,0 +1,63 @@
+{
+  "overview": "This PR improves auth error handling by replacing silent None returns with explicit exceptions, and updates the middleware to properly propagate error messages to clients.",
+  "suggested_order": ["auth-error-handling", "middleware-error-propagation"],
+  "threads": [
+    {
+      "id": "auth-error-handling",
+      "title": "Replace silent auth failures with explicit exceptions",
+      "summary": "The token validator previously returned None on failure, losing context about why authentication failed. This thread adds input validation and converts jwt errors into typed AuthError exceptions.",
+      "root_cause": "Silent None returns on auth failure made debugging impossible and prevented the middleware from returning useful error messages.",
+      "dependencies": [],
+      "steps": [
+        {
+          "order": 1,
+          "narration": "Add a guard clause to TokenValidator.__init__ so that misconfiguration is caught at startup rather than producing cryptic errors at request time.",
+          "hunks": [
+            {
+              "file_path": "src/auth.py",
+              "old_start": 3,
+              "old_count": 6,
+              "new_start": 3,
+              "new_count": 8
+            }
+          ]
+        },
+        {
+          "order": 2,
+          "narration": "Convert jwt decode exceptions into typed AuthError exceptions, preserving the specific failure reason (expired vs invalid) instead of collapsing both into None.",
+          "hunks": [
+            {
+              "file_path": "src/auth.py",
+              "old_start": 12,
+              "old_count": 5,
+              "new_start": 14,
+              "new_count": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "middleware-error-propagation",
+      "title": "Update middleware to handle auth exceptions",
+      "summary": "With TokenValidator now raising exceptions instead of returning None, the middleware needs to catch these errors and translate them into proper HTTP responses with error details.",
+      "root_cause": "The middleware was checking for None returns which no longer happens — it needs to catch AuthError exceptions instead.",
+      "dependencies": ["auth-error-handling"],
+      "steps": [
+        {
+          "order": 1,
+          "narration": "Wrap TokenValidator construction in a try/except to translate the new ValueError into a ConfigError, and update request handling to catch AuthError exceptions instead of checking for None.",
+          "hunks": [
+            {
+              "file_path": "src/middleware.py",
+              "old_start": 4,
+              "old_count": 11,
+              "new_start": 4,
+              "new_count": 16
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

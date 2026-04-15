@@ -1,0 +1,47 @@
+diff --git a/src/auth.py b/src/auth.py
+index 2cc8e76..3fc2c7f 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
+ 
+ class TokenValidator:
+     def __init__(self, secret: str):
++        if not secret:
++            raise ValueError("secret must not be empty")
+         self.secret = secret
+         self._cache: dict[str, datetime] = {}
+ 
+@@ -12,5 +14,7 @@ class TokenValidator:
+         try:
+             payload = jwt.decode(token, self.secret, algorithms=["HS256"])
+         except jwt.ExpiredSignatureError:
+-            return None
++            raise AuthError("Token expired")
++        except jwt.InvalidTokenError:
++            raise AuthError("Invalid token")
+         return payload
+diff --git a/src/middleware.py b/src/middleware.py
+index e1e1fed..9e522e8 100644
+--- a/src/middleware.py
++++ b/src/middleware.py
+@@ -4,11 +4,16 @@ from src.auth import TokenValidator
+ class AuthMiddleware:
+     def __init__(self, app, secret: str):
+         self.app = app
+-        self.validator = TokenValidator(secret)
++        try:
++            self.validator = TokenValidator(secret)
++        except ValueError as exc:
++            raise ConfigError(f"Auth misconfigured: {exc}") from exc
+ 
+     def process_request(self, request):
+         token = request.headers.get("Authorization", "").removeprefix("Bearer ")
+-        payload = self.validator.validate(token)
+-        if payload is None:
+-            return Response(status=401)
++        try:
++            payload = self.validator.validate(token)
++        except AuthError as exc:
++            return Response(status=401, body=str(exc))
+         request.user = payload
++        return None
