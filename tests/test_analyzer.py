@@ -67,16 +67,19 @@ class TestAnthropicProviderParsing:
         mock_text_block.type = "text"
         mock_text_block.text = sample_response_text
 
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 200
+        mock_final = MagicMock()
+        mock_final.content = [mock_text_block]
 
-        mock_response = MagicMock()
-        mock_response.content = [mock_text_block]
-        mock_response.usage = mock_usage
+        mock_stream = MagicMock()
+        mock_stream.__iter__ = MagicMock(return_value=iter([]))
+        mock_stream.get_final_message.return_value = mock_final
+
+        mock_stream_ctx = MagicMock()
+        mock_stream_ctx.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream_ctx.__exit__ = MagicMock(return_value=False)
 
         mock_client = MagicMock()
-        mock_client.messages.create.return_value = mock_response
+        mock_client.messages.stream.return_value = mock_stream_ctx
         provider._client = mock_client
         walkthrough = provider.analyze(hunks, simple_diff, {})
 

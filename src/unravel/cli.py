@@ -16,6 +16,7 @@ from unravel.git import (
     get_pr_metadata,
     parse_diff,
 )
+from unravel.hydration import hydrate_walkthrough
 from unravel.narrator import validate_walkthrough
 from unravel.providers import get_provider
 from unravel.renderer import render_json, render_rich, render_tree
@@ -74,6 +75,9 @@ def diff(
     staged: Annotated[
         bool, typer.Option("--staged", help="Include only staged changes")
     ] = False,
+    no_tui: Annotated[
+        bool, typer.Option("--no-tui", help="Disable interactive TUI")
+    ] = False,
     api_key: Annotated[
         str | None,
         typer.Option("--api-key", help="API key", envvar="UNRAVEL_API_KEY"),
@@ -88,6 +92,7 @@ def diff(
         provider=provider,
         json_output=json_output,
         tree_only=tree_only,
+        no_tui=no_tui,
         thinking_budget=thinking_budget,
         max_output_tokens=max_output_tokens,
         api_key=api_key,
@@ -120,6 +125,9 @@ def pr(
     remote: Annotated[
         str, typer.Option("--remote", help="Git remote name")
     ] = "origin",
+    no_tui: Annotated[
+        bool, typer.Option("--no-tui", help="Disable interactive TUI")
+    ] = False,
     api_key: Annotated[
         str | None,
         typer.Option("--api-key", help="API key", envvar="UNRAVEL_API_KEY"),
@@ -134,6 +142,7 @@ def pr(
         provider=provider,
         json_output=json_output,
         tree_only=tree_only,
+        no_tui=no_tui,
         thinking_budget=thinking_budget,
         max_output_tokens=max_output_tokens,
         api_key=api_key,
@@ -151,10 +160,13 @@ def _run(
     provider: str | None,
     json_output: bool,
     tree_only: bool,
+    no_tui: bool = False,
     thinking_budget: int | None,
     max_output_tokens: int | None,
     api_key: str | None,
 ) -> None:
+    import sys
+
     try:
         config = load_config(
             provider=provider,
@@ -185,12 +197,21 @@ def _run(
             f"[dim]Parsed {len(hunks)} hunks across {file_count} files[/dim]"
         )
 
-        walkthrough = llm.analyze(
-            hunks,
-            raw_diff,
-            metadata,
-            on_status=lambda msg: console.print(f"[dim]{msg}[/dim]"),
-        )
+        with console.status(
+            "[bold cyan]Starting analysis...", spinner="dots"
+        ) as live:
+            walkthrough = llm.analyze(
+                hunks,
+                raw_diff,
+                metadata,
+                on_status=lambda msg: live.update(f"[bold cyan]{msg}"),
+            )
+        elapsed = walkthrough.metadata.get("elapsed_seconds", 0)
+        console.print(f"[dim]Analysis complete in {elapsed}s[/dim]")
+
+        walkthrough, hydration_warnings = hydrate_walkthrough(walkthrough, hunks)
+        for w in hydration_warnings:
+            console.print(f"[yellow]Hydration:[/yellow] {w}")
 
         warnings = validate_walkthrough(walkthrough, hunks)
         for w in warnings:
@@ -200,12 +221,23 @@ def _run(
             stdout.print(render_json(walkthrough))
         elif tree_only:
             render_tree(walkthrough, stdout)
-        else:
+        elif no_tui or not sys.stdout.isatty():
             render_rich(walkthrough, stdout)
+        else:
+            from unravel.tui import UnravelApp
+
+            app = UnravelApp(walkthrough=walkthrough)
+            app.run()
 
     except UnravelGitError as exc:
         console.print(f"[red]Git error:[/red] {exc}")
         raise typer.Exit(1) from exc
+    except ConnectionError as exc:
+        console.print(f"[red]Network error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    except KeyboardInterrupt as exc:
+        console.print("\n[yellow]Interrupted by user[/yellow]")
+        raise typer.Exit(130) from exc
     except ValueError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc

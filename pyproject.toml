@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "unravel-review"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI-powered CLI that decomposes PR diffs into causal threads for human code reviewers"
 readme = "README.md"
 license = "MIT"
@@ -28,6 +28,7 @@ dependencies = [
     "typer>=0.15.0",
     "rich>=13.0",
     "unidiff>=0.7.5",
+    "textual>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio",
     "ruff>=0.8.0",
+    "textual-dev>=1.0",
 ]
 
 [project.scripts]
