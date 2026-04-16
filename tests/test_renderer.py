@@ -5,11 +5,14 @@ from __future__ import annotations
 import base64
 import json
 
-from unravel.models import Walkthrough
+from unravel.models import Hunk, Walkthrough
 from unravel.renderer import (
     COMMENT_MARKER_DATA_PREFIX,
     COMMENT_MARKER_END,
     COMMENT_MARKER_START,
+    _format_hunk_ref,
+    _github_diff_anchor,
+    _hunk_line_range,
     render_github_comment,
     render_markdown,
 )
@@ -108,3 +111,74 @@ def test_render_markdown_single_thread() -> None:
     assert "1 thread across" in md
     assert "The Only Thread" in md
     assert "`only-thread`" in md
+
+
+# --- Line range and GitHub diff link tests ---
+
+
+def test_hunk_line_range_new_side() -> None:
+    hunk = Hunk(file_path="a.py", new_start=10, new_count=5)
+    assert _hunk_line_range(hunk) == "L10\u201314"
+
+
+def test_hunk_line_range_single_line() -> None:
+    hunk = Hunk(file_path="a.py", new_start=42, new_count=1)
+    assert _hunk_line_range(hunk) == "L42"
+
+
+def test_hunk_line_range_old_fallback() -> None:
+    hunk = Hunk(file_path="a.py", old_start=5, old_count=3, new_start=0, new_count=0)
+    assert _hunk_line_range(hunk) == "L5\u20137"
+
+
+def test_hunk_line_range_empty() -> None:
+    hunk = Hunk(file_path="a.py")
+    assert _hunk_line_range(hunk) == ""
+
+
+def test_github_diff_anchor() -> None:
+    hunk = Hunk(file_path="src/unravel/cli.py", new_start=480, new_count=13)
+    anchor = _github_diff_anchor(hunk)
+    assert anchor is not None
+    assert anchor.startswith("diff-")
+    assert anchor.endswith("R480-R492")
+
+
+def test_github_diff_anchor_old_only() -> None:
+    hunk = Hunk(file_path="deleted.py", old_start=1, old_count=10, new_start=0, new_count=0)
+    anchor = _github_diff_anchor(hunk)
+    assert anchor is not None
+    assert "L1-L10" in anchor
+
+
+def test_format_hunk_ref_no_link() -> None:
+    hunk = Hunk(file_path="foo.py", new_start=10, new_count=5)
+    ref = _format_hunk_ref(hunk, pr_files_url=None)
+    assert ref == "- `foo.py:L10\u201314`"
+
+
+def test_format_hunk_ref_with_link() -> None:
+    hunk = Hunk(file_path="foo.py", new_start=10, new_count=5)
+    ref = _format_hunk_ref(hunk, pr_files_url="https://github.com/owner/repo/pull/1/files")
+    assert ref is not None
+    assert "[`foo.py:L10\u201314`]" in ref
+    assert "https://github.com/owner/repo/pull/1/files#diff-" in ref
+    assert "R10-R14" in ref
+
+
+def test_format_hunk_ref_no_file_path() -> None:
+    hunk = Hunk()
+    assert _format_hunk_ref(hunk, pr_files_url=None) is None
+
+
+def test_render_markdown_with_pr_links(sample_walkthrough: Walkthrough, simple_diff: str) -> None:
+    """When pr_files_url is set, hunk refs become clickable links."""
+    from unravel.git import parse_diff
+    from unravel.hydration import hydrate_walkthrough
+
+    hunks = parse_diff(simple_diff)
+    wt, _ = hydrate_walkthrough(sample_walkthrough, hunks)
+    md = render_markdown(wt, pr_files_url="https://github.com/test/repo/pull/1/files")
+
+    assert "https://github.com/test/repo/pull/1/files#diff-" in md
+    assert ":L" in md  # line range in the label

@@ -25,6 +25,7 @@ from unravel.git import (
     get_diff_from_pr,
     get_diff_from_range,
     get_pr_metadata,
+    get_repo_nwo,
     parse_diff,
 )
 from unravel.hydration import hydrate_walkthrough
@@ -418,6 +419,12 @@ def _run(
                 pr_number, metadata or None, remote=remote
             )
 
+        pr_files_url = None
+        if diff_source == "pr" and pr_number:
+            nwo = get_repo_nwo(remote)
+            if nwo:
+                pr_files_url = f"https://github.com/{nwo}/pull/{pr_number}/files"
+
         hunks = parse_diff(raw_diff)
         file_count = len({h.file_path for h in hunks})
         console.print(
@@ -484,11 +491,13 @@ def _run(
 
         if github_comment:
             # Bypass Rich to avoid line-wrapping the long base64 payload.
-            sys.stdout.write(render_github_comment(walkthrough) + "\n")
+            sys.stdout.write(
+                render_github_comment(walkthrough, pr_files_url=pr_files_url) + "\n"
+            )
         elif json_output:
             stdout.print(render_json(walkthrough))
         elif markdown_output:
-            stdout.print(render_markdown(walkthrough))
+            stdout.print(render_markdown(walkthrough, pr_files_url=pr_files_url))
         elif tree_only:
             render_tree(walkthrough, stdout)
         elif no_tui or not sys.stdout.isatty():

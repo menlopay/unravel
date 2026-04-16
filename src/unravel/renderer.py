@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 
 from rich.console import Console
@@ -11,7 +12,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 from rich.tree import Tree
 
-from unravel.models import Walkthrough
+from unravel.models import Hunk, Walkthrough
 
 COMMENT_MARKER_START = "<!-- unravel-cache-v1-start -->"
 COMMENT_MARKER_DATA_PREFIX = "<!-- unravel-cache-v1-data:"
@@ -105,8 +106,59 @@ def _thread_file_count(walkthrough: Walkthrough) -> int:
     })
 
 
-def render_markdown(walkthrough: Walkthrough) -> str:
-    """Render walkthrough as GitHub-flavored markdown."""
+def _hunk_line_range(hunk: Hunk) -> str:
+    """Return a human-readable line range like ``L480-492``, or empty string."""
+    if hunk.new_start and hunk.new_count:
+        end = hunk.new_start + hunk.new_count - 1
+        if end == hunk.new_start:
+            return f"L{hunk.new_start}"
+        return f"L{hunk.new_start}\u2013{end}"
+    if hunk.old_start and hunk.old_count:
+        end = hunk.old_start + hunk.old_count - 1
+        if end == hunk.old_start:
+            return f"L{hunk.old_start}"
+        return f"L{hunk.old_start}\u2013{end}"
+    return ""
+
+
+def _github_diff_anchor(hunk: Hunk) -> str | None:
+    """Build the ``#diff-...`` fragment for a GitHub PR files URL."""
+    file_hash = hashlib.sha256(hunk.file_path.encode()).hexdigest()
+    if hunk.new_start and hunk.new_count:
+        end = hunk.new_start + hunk.new_count - 1
+        return f"diff-{file_hash}R{hunk.new_start}-R{end}"
+    if hunk.old_start and hunk.old_count:
+        end = hunk.old_start + hunk.old_count - 1
+        return f"diff-{file_hash}L{hunk.old_start}-L{end}"
+    return None
+
+
+def _format_hunk_ref(hunk: Hunk, pr_files_url: str | None) -> str | None:
+    """Format a hunk as a markdown list item with optional diff link."""
+    if not hunk.file_path:
+        return None
+    label = hunk.file_path
+    line_range = _hunk_line_range(hunk)
+    if line_range:
+        label += f":{line_range}"
+    if pr_files_url:
+        anchor = _github_diff_anchor(hunk)
+        if anchor:
+            return f"- [`{label}`]({pr_files_url}#{anchor})"
+    return f"- `{label}`"
+
+
+def render_markdown(
+    walkthrough: Walkthrough,
+    *,
+    pr_files_url: str | None = None,
+) -> str:
+    """Render walkthrough as GitHub-flavored markdown.
+
+    When *pr_files_url* is provided (e.g.
+    ``https://github.com/owner/repo/pull/42/files``), each hunk reference
+    becomes a direct link to the relevant diff range on GitHub.
+    """
     threads = walkthrough.threads
     file_count = _thread_file_count(walkthrough)
 
@@ -141,15 +193,20 @@ def render_markdown(walkthrough: Walkthrough) -> str:
 
         for step in sorted(thread.steps, key=lambda s: s.order):
             parts.append(f"**Step {step.order}:** {step.narration}")
-            file_list = [f"- `{h.file_path}`" for h in step.hunks if h.file_path]
-            if file_list:
-                parts.extend(file_list)
+            for h in step.hunks:
+                ref = _format_hunk_ref(h, pr_files_url)
+                if ref:
+                    parts.append(ref)
             parts.append("")
 
     return "\n".join(parts)
 
 
-def render_github_comment(walkthrough: Walkthrough) -> str:
+def render_github_comment(
+    walkthrough: Walkthrough,
+    *,
+    pr_files_url: str | None = None,
+) -> str:
     """Render the full GitHub PR comment body with visible summary and hidden cache.
 
     The comment has three parts:
@@ -164,7 +221,7 @@ def render_github_comment(walkthrough: Walkthrough) -> str:
     f_word = "file" if file_count == 1 else "files"
     summary_line = f"{len(threads)} {t_word} across {file_count} {f_word}"
 
-    md_body = render_markdown(walkthrough)
+    md_body = render_markdown(walkthrough, pr_files_url=pr_files_url)
     json_payload = json.dumps(walkthrough.to_dict())
     encoded = base64.b64encode(json_payload.encode("utf-8")).decode("ascii")
 
