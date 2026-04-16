@@ -34,7 +34,7 @@ runs:
         ACTION_REPOSITORY: ${{ github.action_repository }}
         ACTION_REF: ${{ github.action_ref }}
       run: |
-        uv pip install --system "git+https://github.com/${ACTION_REPOSITORY}.git@${ACTION_REF}"
+        uv pip install "git+https://github.com/${ACTION_REPOSITORY}.git@${ACTION_REF}"
 
     - name: Run analysis and generate comment
       shell: bash
