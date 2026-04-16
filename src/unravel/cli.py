@@ -10,7 +10,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from unravel import __version__, cache
+from unravel import __version__, cache, remote_cache
 from unravel.config import (
     config_path,
     get_setting,
@@ -30,7 +30,13 @@ from unravel.git import (
 from unravel.hydration import hydrate_walkthrough
 from unravel.narrator import validate_walkthrough
 from unravel.providers import get_provider
-from unravel.renderer import render_json, render_rich, render_tree
+from unravel.renderer import (
+    render_github_comment,
+    render_json,
+    render_markdown,
+    render_rich,
+    render_tree,
+)
 
 app = typer.Typer(
     name="unravel",
@@ -87,6 +93,9 @@ def diff(
     tree_only: Annotated[
         bool, typer.Option("--tree-only", "-t", help="Compact tree view")
     ] = False,
+    markdown_output: Annotated[
+        bool, typer.Option("--markdown", help="Output GitHub-flavored markdown")
+    ] = False,
     thinking_budget: Annotated[
         int | None,
         typer.Option("--thinking-budget", help="Thinking token budget"),
@@ -129,6 +138,7 @@ def diff(
         provider=provider,
         json_output=json_output,
         tree_only=tree_only,
+        markdown_output=markdown_output,
         no_tui=no_tui,
         thinking_budget=thinking_budget,
         max_output_tokens=max_output_tokens,
@@ -152,6 +162,16 @@ def pr(
     ] = False,
     tree_only: Annotated[
         bool, typer.Option("--tree-only", "-t", help="Compact tree view")
+    ] = False,
+    markdown_output: Annotated[
+        bool, typer.Option("--markdown", help="Output GitHub-flavored markdown")
+    ] = False,
+    github_comment: Annotated[
+        bool,
+        typer.Option(
+            "--github-comment",
+            help="Output a full GitHub PR comment body (markdown + hidden JSON cache).",
+        ),
     ] = False,
     thinking_budget: Annotated[
         int | None,
@@ -195,6 +215,8 @@ def pr(
         provider=provider,
         json_output=json_output,
         tree_only=tree_only,
+        markdown_output=markdown_output,
+        github_comment=github_comment,
         no_tui=no_tui,
         thinking_budget=thinking_budget,
         max_output_tokens=max_output_tokens,
@@ -349,6 +371,8 @@ def _run(
     provider: str | None,
     json_output: bool,
     tree_only: bool,
+    markdown_output: bool = False,
+    github_comment: bool = False,
     no_tui: bool = False,
     thinking_budget: int | None,
     max_output_tokens: int | None,
@@ -413,6 +437,21 @@ def _run(
                     f"({entry.provider}/{entry.model})[/dim]"
                 )
 
+        if walkthrough is None and diff_source == "pr" and not no_cache and not fresh:
+            console.print("[dim]Checking for remote cache...[/dim]")
+            walkthrough = remote_cache.fetch_from_pr_comment(
+                pr_number, raw_diff, remote=remote
+            )
+            if walkthrough is not None:
+                console.print("[dim]Loaded analysis from PR comment cache[/dim]")
+                cache.save(
+                    raw_diff,
+                    walkthrough.metadata.get("provider", config.provider),
+                    walkthrough.metadata.get("model", config.resolved_model),
+                    walkthrough,
+                    source_label=source_label,
+                )
+
         if walkthrough is None:
             with console.status(
                 "[bold cyan]Starting analysis...", spinner="dots"
@@ -443,8 +482,12 @@ def _run(
         for w in warnings:
             console.print(f"[yellow]Warning:[/yellow] {w}")
 
-        if json_output:
+        if github_comment:
+            stdout.print(render_github_comment(walkthrough))
+        elif json_output:
             stdout.print(render_json(walkthrough))
+        elif markdown_output:
+            stdout.print(render_markdown(walkthrough))
         elif tree_only:
             render_tree(walkthrough, stdout)
         elif no_tui or not sys.stdout.isatty():

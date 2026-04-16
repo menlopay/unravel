@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import json
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -9,6 +12,10 @@ from rich.text import Text
 from rich.tree import Tree
 
 from unravel.models import Walkthrough
+
+COMMENT_MARKER_START = "<!-- unravel-cache-v1-start -->"
+COMMENT_MARKER_DATA_PREFIX = "<!-- unravel-cache-v1-data:"
+COMMENT_MARKER_END = "<!-- unravel-cache-v1-end -->"
 
 
 def render_json(walkthrough: Walkthrough) -> str:
@@ -90,3 +97,90 @@ def render_tree(walkthrough: Walkthrough, console: Console) -> None:
                 step_branch.add(f"[dim]{hunk.file_path}[/dim]")
 
     console.print(tree)
+
+
+def _thread_file_count(walkthrough: Walkthrough) -> int:
+    return len({
+        h.file_path for t in walkthrough.threads for s in t.steps for h in s.hunks
+    })
+
+
+def render_markdown(walkthrough: Walkthrough) -> str:
+    """Render walkthrough as GitHub-flavored markdown."""
+    threads = walkthrough.threads
+    file_count = _thread_file_count(walkthrough)
+
+    parts: list[str] = []
+
+    t_word = "thread" if len(threads) == 1 else "threads"
+    f_word = "file" if file_count == 1 else "files"
+    parts.append(f"{len(threads)} {t_word} across {file_count} {f_word}")
+    parts.append("")
+    parts.append(walkthrough.overview)
+    parts.append("")
+
+    if walkthrough.suggested_order:
+        order_str = " \u2192 ".join(f"`{tid}`" for tid in walkthrough.suggested_order)
+        parts.append(f"**Suggested review order:** {order_str}")
+        parts.append("")
+
+    for thread in threads:
+        parts.append("---")
+        parts.append("")
+        parts.append(f"### {thread.title} (`{thread.id}`)")
+        parts.append("")
+        parts.append(f"**Root cause:** {thread.root_cause}")
+        parts.append("")
+        parts.append(thread.summary)
+        parts.append("")
+
+        if thread.dependencies:
+            deps = ", ".join(thread.dependencies)
+            parts.append(f"*Depends on: {deps}*")
+            parts.append("")
+
+        for step in sorted(thread.steps, key=lambda s: s.order):
+            parts.append(f"**Step {step.order}:** {step.narration}")
+            file_list = [f"- `{h.file_path}`" for h in step.hunks if h.file_path]
+            if file_list:
+                parts.extend(file_list)
+            parts.append("")
+
+    return "\n".join(parts)
+
+
+def render_github_comment(walkthrough: Walkthrough) -> str:
+    """Render the full GitHub PR comment body with visible summary and hidden cache.
+
+    The comment has three parts:
+    1. A header with thread/file counts
+    2. A collapsible ``<details>`` block with the full markdown walkthrough
+    3. A base64-encoded JSON payload hidden inside an HTML comment
+    """
+    threads = walkthrough.threads
+    file_count = _thread_file_count(walkthrough)
+
+    t_word = "thread" if len(threads) == 1 else "threads"
+    f_word = "file" if file_count == 1 else "files"
+    summary_line = f"{len(threads)} {t_word} across {file_count} {f_word}"
+
+    md_body = render_markdown(walkthrough)
+    json_payload = json.dumps(walkthrough.to_dict())
+    encoded = base64.b64encode(json_payload.encode("utf-8")).decode("ascii")
+
+    parts = [
+        COMMENT_MARKER_START,
+        "",
+        f"### Unravel \u2014 {summary_line}",
+        "",
+        "<details>",
+        "<summary>Click to expand walkthrough</summary>",
+        "",
+        md_body,
+        "</details>",
+        "",
+        f"{COMMENT_MARKER_DATA_PREFIX}{encoded} -->",
+        COMMENT_MARKER_END,
+    ]
+
+    return "\n".join(parts)
