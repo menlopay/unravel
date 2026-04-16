@@ -47,7 +47,9 @@ def fetch_from_pr_comment(
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
 
-    for body in _split_comment_bodies(result.stdout):
+    # GitHub returns comments oldest-first; use the most recent unravel comment.
+    bodies = _split_comment_bodies(result.stdout)
+    for body in reversed(bodies):
         walkthrough = _extract_walkthrough(body, raw_diff)
         if walkthrough is not None:
             return walkthrough
