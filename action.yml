@@ -1,0 +1,58 @@
+name: "Unravel PR"
+description: "Analyze PR diffs with Unravel and post a walkthrough as a PR comment"
+branding:
+  icon: "git-pull-request"
+  color: "purple"
+
+inputs:
+  api-key:
+    description: "LLM API key (e.g. Anthropic API key)"
+    required: true
+  provider:
+    description: "LLM provider (default: anthropic)"
+    required: false
+    default: ""
+  model:
+    description: "Model to use (default: provider default)"
+    required: false
+    default: ""
+  github-token:
+    description: "GitHub token for posting comments (default: github.token)"
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: "composite"
+  steps:
+    - uses: astral-sh/setup-uv@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install unravel
+      shell: bash
+      run: uv pip install --system unravel-review
+
+    - name: Run analysis and generate comment
+      shell: bash
+      run: |
+        args=(pr "${REPO}#${PR_NUMBER}" --github-comment --no-tui --no-cache)
+        [ -n "$MODEL" ]    && args+=(--model "$MODEL")
+        [ -n "$PROVIDER" ] && args+=(--provider "$PROVIDER")
+        unravel "${args[@]}" > "$RUNNER_TEMP/unravel-comment.md"
+      env:
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        UNRAVEL_API_KEY: ${{ inputs.api-key }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        MODEL: ${{ inputs.model }}
+        PROVIDER: ${{ inputs.provider }}
+
+    - name: Post PR comment
+      shell: bash
+      run: |
+        gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+          -F "body=@${RUNNER_TEMP}/unravel-comment.md"
+      env:
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        GH_TOKEN: ${{ inputs.github-token }}

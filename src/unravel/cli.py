@@ -10,7 +10,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from unravel import __version__, cache
+from unravel import __version__, cache, remote_cache
 from unravel.config import (
     config_path,
     get_setting,
@@ -25,12 +25,19 @@ from unravel.git import (
     get_diff_from_pr,
     get_diff_from_range,
     get_pr_metadata,
+    get_repo_nwo,
     parse_diff,
 )
 from unravel.hydration import hydrate_walkthrough
 from unravel.narrator import validate_walkthrough
 from unravel.providers import get_provider
-from unravel.renderer import render_json, render_rich, render_tree
+from unravel.renderer import (
+    render_github_comment,
+    render_json,
+    render_markdown,
+    render_rich,
+    render_tree,
+)
 
 app = typer.Typer(
     name="unravel",
@@ -87,6 +94,9 @@ def diff(
     tree_only: Annotated[
         bool, typer.Option("--tree-only", "-t", help="Compact tree view")
     ] = False,
+    markdown_output: Annotated[
+        bool, typer.Option("--markdown", help="Output GitHub-flavored markdown")
+    ] = False,
     thinking_budget: Annotated[
         int | None,
         typer.Option("--thinking-budget", help="Thinking token budget"),
@@ -129,6 +139,7 @@ def diff(
         provider=provider,
         json_output=json_output,
         tree_only=tree_only,
+        markdown_output=markdown_output,
         no_tui=no_tui,
         thinking_budget=thinking_budget,
         max_output_tokens=max_output_tokens,
@@ -138,9 +149,23 @@ def diff(
     )
 
 
+def _parse_pr_ref(ref: str) -> tuple[int, str | None]:
+    """Parse ``123``, ``#123``, or ``org/repo#123`` into (number, repo_or_none)."""
+    if "#" in ref:
+        repo_part, _, num_part = ref.partition("#")
+        return int(num_part), repo_part or None
+    return int(ref), None
+
+
 @app.command()
 def pr(
-    number: Annotated[int, typer.Argument(help="PR number")],
+    pr_ref: Annotated[
+        str,
+        typer.Argument(
+            help="PR number or org/repo#number (e.g. 42, #42, roo-oliv/unravel#42)",
+            metavar="PR",
+        ),
+    ],
     model: Annotated[
         str | None, typer.Option("--model", "-m", help="Model to use")
     ] = None,
@@ -152,6 +177,16 @@ def pr(
     ] = False,
     tree_only: Annotated[
         bool, typer.Option("--tree-only", "-t", help="Compact tree view")
+    ] = False,
+    markdown_output: Annotated[
+        bool, typer.Option("--markdown", help="Output GitHub-flavored markdown")
+    ] = False,
+    github_comment: Annotated[
+        bool,
+        typer.Option(
+            "--github-comment",
+            help="Output a full GitHub PR comment body (markdown + hidden JSON cache).",
+        ),
     ] = False,
     thinking_budget: Annotated[
         int | None,
@@ -187,14 +222,22 @@ def pr(
     ] = None,
 ) -> None:
     """Analyze a GitHub PR and decompose into causal threads."""
+    try:
+        number, repo = _parse_pr_ref(pr_ref)
+    except ValueError:
+        console.print(f"[red]Error:[/red] Invalid PR reference: {pr_ref}")
+        raise typer.Exit(1)
     _run(
         diff_source="pr",
         pr_number=number,
+        repo=repo,
         remote=remote,
         model=model,
         provider=provider,
         json_output=json_output,
         tree_only=tree_only,
+        markdown_output=markdown_output,
+        github_comment=github_comment,
         no_tui=no_tui,
         thinking_budget=thinking_budget,
         max_output_tokens=max_output_tokens,
@@ -343,12 +386,15 @@ def _run(
     diff_source: str,
     range_spec: str | None = None,
     pr_number: int | None = None,
+    repo: str | None = None,
     remote: str = "origin",
     staged: bool = False,
     model: str | None,
     provider: str | None,
     json_output: bool,
     tree_only: bool,
+    markdown_output: bool = False,
+    github_comment: bool = False,
     no_tui: bool = False,
     thinking_budget: int | None,
     max_output_tokens: int | None,
@@ -384,15 +430,23 @@ def _run(
             )
         else:
             console.print(f"[dim]Getting diff for PR #{pr_number}...[/dim]")
-            raw_diff = get_diff_from_pr(pr_number, remote=remote)
+            raw_diff = get_diff_from_pr(pr_number, remote=remote, repo=repo)
             source_label = f"pr:#{pr_number}"
             try:
-                metadata = get_pr_metadata(pr_number, remote=remote)
+                metadata = get_pr_metadata(pr_number, remote=remote, repo=repo)
             except UnravelGitError:
                 pass  # metadata is optional
             source_info = build_pr_source_info(
-                pr_number, metadata or None, remote=remote
+                pr_number, metadata or None, remote=remote, repo=repo
             )
+
+        pr_files_url = None
+        repo_nwo = None
+        if diff_source == "pr" and pr_number:
+            nwo = get_repo_nwo(remote, repo)
+            if nwo:
+                repo_nwo = nwo
+                pr_files_url = f"https://github.com/{nwo}/pull/{pr_number}/files"
 
         hunks = parse_diff(raw_diff)
         file_count = len({h.file_path for h in hunks})
@@ -411,6 +465,21 @@ def _run(
                 console.print(
                     f"[dim]Loaded cached analysis from {age} "
                     f"({entry.provider}/{entry.model})[/dim]"
+                )
+
+        if walkthrough is None and diff_source == "pr" and not no_cache and not fresh:
+            console.print("[dim]Checking for remote cache...[/dim]")
+            walkthrough = remote_cache.fetch_from_pr_comment(
+                pr_number, raw_diff, remote=remote, repo=repo_nwo
+            )
+            if walkthrough is not None:
+                console.print("[dim]Loaded analysis from PR comment cache[/dim]")
+                cache.save(
+                    raw_diff,
+                    walkthrough.metadata.get("provider", config.provider),
+                    walkthrough.metadata.get("model", config.resolved_model),
+                    walkthrough,
+                    source_label=source_label,
                 )
 
         if walkthrough is None:
@@ -443,8 +512,21 @@ def _run(
         for w in warnings:
             console.print(f"[yellow]Warning:[/yellow] {w}")
 
-        if json_output:
+        if github_comment:
+            # Bypass Rich to avoid line-wrapping the long base64 payload.
+            sys.stdout.write(
+                render_github_comment(
+                    walkthrough,
+                    pr_files_url=pr_files_url,
+                    pr_number=pr_number,
+                    repo_nwo=repo_nwo,
+                )
+                + "\n"
+            )
+        elif json_output:
             stdout.print(render_json(walkthrough))
+        elif markdown_output:
+            stdout.print(render_markdown(walkthrough, pr_files_url=pr_files_url))
         elif tree_only:
             render_tree(walkthrough, stdout)
         elif no_tui or not sys.stdout.isatty():
