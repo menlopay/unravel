@@ -246,7 +246,7 @@ def render_github_comment(
         "",
         f"### Changes unravelled in {len(threads)} {t_word} across {file_count} {f_word}",
         "",
-        f"Review these changes locally with `{cli_ref}`",
+        f"Review locally with `{cli_ref}`",
         "",
         "<details>",
         "<summary>Click to expand walkthrough</summary>",

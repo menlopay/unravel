@@ -57,12 +57,12 @@ def test_render_github_comment_cta(sample_walkthrough: Walkthrough) -> None:
     comment = render_github_comment(
         sample_walkthrough, pr_number=42, repo_nwo="acme/repo"
     )
-    assert "Review these changes locally with `unravel pr acme/repo#42`" in comment
+    assert "Review locally with `unravel pr acme/repo#42`" in comment
 
 
 def test_render_github_comment_cta_no_repo(sample_walkthrough: Walkthrough) -> None:
     comment = render_github_comment(sample_walkthrough, pr_number=7)
-    assert "Review these changes locally with `unravel pr 7`" in comment
+    assert "Review locally with `unravel pr 7`" in comment
 
 
 def test_render_github_comment_disclaimer(sample_walkthrough: Walkthrough) -> None:
